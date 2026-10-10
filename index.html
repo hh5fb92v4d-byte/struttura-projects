@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#111111" />
-  <meta name="description" content="STRUTTURA Projects – přehled zakázek, použitých materiálů a ziskovosti." />
+  <meta name="theme-color" content="#0e0f10" />
+  <meta name="description" content="STRUTTURA Projects – zakázky, materiály, příjmy, náklady a ziskovost." />
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
   <link rel="stylesheet" href="styles.css" />
-  <title>STRUTTURA Projects V1.01</title>
+  <title>STRUTTURA Projects V1.02</title>
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <div>
-        <div class="brand-mark">STRUTTURA</div>
-        <div class="brand-sub">PROJECTS <span id="versionLabel">V1.01</span></div>
+      <div class="brand-lockup">
+        <img src="assets/logo_vertical_light.svg" class="brand-logo" alt="STRUTTURA" />
+        <div class="brand-projects">PROJECTS <span id="versionLabel">V1.02</span></div>
       </div>
       <button class="icon-btn" id="backupBtn" aria-label="Záloha dat" title="Záloha dat">↥</button>
     </header>
@@ -24,38 +24,13 @@
     <main id="app"></main>
 
     <nav class="bottom-nav" aria-label="Hlavní navigace">
-      <button class="nav-item active" data-route="dashboard">
-        <span class="nav-icon">⌂</span><span>Přehled</span>
-      </button>
-      <button class="nav-item" data-route="jobs">
-        <span class="nav-icon">▤</span><span>Zakázky</span>
-      </button>
-      <button class="nav-item nav-add" data-route="new">
-        <span class="nav-icon">＋</span><span>Nová</span>
-      </button>
-      <button class="nav-item" data-route="finance">
-        <span class="nav-icon">Kč</span><span>Finance</span>
-      </button>
-      <button class="nav-item" data-route="settings">
-        <span class="nav-icon">⚙</span><span>Více</span>
-      </button>
+      <button class="nav-item active" data-route="dashboard"><span class="nav-icon">⌂</span><span>Přehled</span></button>
+      <button class="nav-item" data-route="jobs"><span class="nav-icon">▤</span><span>Zakázky</span></button>
+      <button class="nav-item nav-add" data-route="new"><span class="nav-icon">＋</span><span>Nová</span></button>
+      <button class="nav-item" data-route="finance"><span class="nav-icon">Kč</span><span>Finance</span></button>
+      <button class="nav-item" data-route="settings"><span class="nav-icon">⚙</span><span>Více</span></button>
     </nav>
   </div>
-
-  <template id="materialRowTemplate">
-    <div class="material-editor-card">
-      <div class="material-editor-head">
-        <strong>Materiál</strong>
-        <button type="button" class="text-btn danger remove-material">Odstranit</button>
-      </div>
-      <div class="form-grid two">
-        <label>Výrobce<input name="materialManufacturer" placeholder="např. Oikos" /></label>
-        <label>Produkt<input name="materialProduct" placeholder="např. Travertino Romano" /></label>
-        <label>Odstín / barva<input name="materialColor" placeholder="např. TV 134 / TT6000-N" /></label>
-        <label>Část realizace<input name="materialArea" placeholder="např. stěny koupelny" /></label>
-      </div>
-    </div>
-  </template>
 
   <script src="app.js" defer></script>
 </body>
