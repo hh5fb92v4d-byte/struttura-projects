@@ -1,6 +1,6 @@
-const VERSION = 'V1.02';
-const STORAGE_KEY = 'struttura_projects_v102_jobs';
-const OLD_STORAGE_KEY = 'struttura_projects_v101_jobs';
+const VERSION = 'V1.03';
+const STORAGE_KEY = 'struttura_projects_v103_jobs';
+const OLD_STORAGE_KEYS = ['struttura_projects_v102_jobs','struttura_projects_v101_jobs'];
 
 const money = new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK', maximumFractionDigits: 0 });
 const number = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 1 });
@@ -16,7 +16,8 @@ function income(j) { return sumEntries(j.incomes); }
 function costs(j) { return sumEntries(j.expenses); }
 function profit(j) { return income(j) - costs(j); }
 function margin(j) { return income(j) > 0 ? profit(j) / income(j) : 0; }
-function pricePerM2(j) { return n(j.area) > 0 ? income(j) / n(j.area) : 0; }
+function totalArea(j) { return (j.areas||[]).reduce((sum, item) => sum + n(item.m2), 0); }
+function pricePerM2(j) { return totalArea(j) > 0 ? income(j) / totalArea(j) : 0; }
 function fmtDate(v) { if (!v) return '—'; const d = new Date(v + 'T12:00:00'); return d.toLocaleDateString('cs-CZ'); }
 function statusClass(s) { return s === 'Dokončená' ? 'done' : s === 'Probíhá' ? 'active' : s === 'Reklamace' ? 'claim' : ''; }
 function toast(msg) { const t=document.createElement('div'); t.className='toast'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2200); }
@@ -24,6 +25,8 @@ function toast(msg) { const t=document.createElement('div'); t.className='toast'
 function normalizeJob(j={}) {
   const out = { ...j };
   out.materials = Array.isArray(j.materials) ? j.materials : [];
+  if (Array.isArray(j.areas)) out.areas = j.areas;
+  else out.areas = n(j.area) ? [{ type:'Ostatní', specification:'Původní celková plocha', m2:n(j.area) }] : [];
   if (Array.isArray(j.incomes)) out.incomes = j.incomes;
   else out.incomes = n(j.price) ? [{ date:j.dateFrom||'', category:'Původní zakázka', description:'Původní rozsah zakázky', amount:n(j.price), note:'' }] : [];
 
@@ -36,7 +39,7 @@ function normalizeJob(j={}) {
     if (n(j.costRental)) out.expenses.push({date:j.dateFrom||'',category:'Ostatní',description:'Pronájem strojů',amount:n(j.costRental),note:''});
     if (n(j.costOther)) out.expenses.push({date:j.dateFrom||'',category:'Ostatní',description:'Ostatní náklady',amount:n(j.costOther),note:''});
   }
-  delete out.price; delete out.costMaterial; delete out.costTransport; delete out.costAccommodation; delete out.costRental; delete out.costOther;
+  delete out.price; delete out.area; delete out.costMaterial; delete out.costTransport; delete out.costAccommodation; delete out.costRental; delete out.costOther;
   return out;
 }
 
@@ -44,11 +47,13 @@ function loadJobs() {
   try {
     const fresh = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
     if (Array.isArray(fresh)) return fresh.map(normalizeJob);
-    const old = JSON.parse(localStorage.getItem(OLD_STORAGE_KEY) || '[]');
-    if (Array.isArray(old) && old.length) {
-      const migrated = old.map(normalizeJob);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-      return migrated;
+    for (const key of OLD_STORAGE_KEYS) {
+      const old = JSON.parse(localStorage.getItem(key) || '[]');
+      if (Array.isArray(old) && old.length) {
+        const migrated = old.map(normalizeJob);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
     }
     return [];
   } catch { return []; }
@@ -115,7 +120,7 @@ function jobCard(j){
   return `<article class="job-card" data-job-card data-search="${esc([j.name,j.client,j.city,j.address,mats].join(' ').toLowerCase())}">
     <div class="job-card-top"><div><div class="job-title">${esc(j.name||'Bez názvu')}</div><div class="job-meta">${esc(j.client||'Bez klienta')} · ${esc(j.city||'Bez města')} · ${esc(j.id)}</div></div><span class="badge ${statusClass(j.status)}">${esc(j.status||'Plánovaná')}</span></div>
     <div class="job-card-bottom">
-      <div class="mini-stat"><small>Plocha</small><strong>${number.format(n(j.area))} m²</strong></div>
+      <div class="mini-stat"><small>Plocha</small><strong>${number.format(totalArea(j))} m²</strong></div>
       <div class="mini-stat"><small>Příjmy</small><strong>${money.format(income(j))}</strong></div>
       <div class="mini-stat"><small>Zisk</small><strong>${money.format(profit(j))}</strong></div>
     </div>
@@ -134,6 +139,15 @@ function materialEditor(m={}) { return `<div class="editor-card material-editor-
     <label>Odstín / barva<input name="materialColor" value="${esc(m.color||'')}" placeholder="např. TV 134 / TT6000-N" /></label>
     <label>Část realizace<input name="materialArea" value="${esc(m.area||'')}" placeholder="např. stěny koupelny" /></label>
   </div></div>`; }
+
+function areaEditor(item={type:'Podlaha'}) { return `<div class="editor-card area-editor-card">
+  <div class="editor-head"><strong>Plocha realizace</strong><button type="button" class="text-btn danger remove-area">Odstranit</button></div>
+  <div class="form-grid two">
+    ${selectField('Typ plochy','areaType',['Podlaha','Stěny','Strop','Schody','Ostatní'],item.type||'Podlaha')}
+    ${input('Plocha m²','areaM2',item.m2||'','0','','number','0.01')}
+  </div>
+  <label class="editor-note">Specifikace<input name="areaSpecification" value="${esc(item.specification||'')}" placeholder="např. koupelna, krb, recepční pult…" /></label>
+</div>`; }
 
 function incomeEditor(item={category:'Původní zakázka'}) { return `<div class="editor-card income-editor-card">
   <div class="editor-head"><strong>Příjem</strong><button type="button" class="text-btn danger remove-income">Odstranit</button></div>
@@ -158,7 +172,7 @@ function expenseEditor(item={category:'Materiál'}) { return `<div class="editor
 </div>`; }
 
 function formView(job=null){
-  const edit=Boolean(job); const j=normalizeJob(job||{status:'Plánovaná',materials:[],incomes:[],expenses:[]});
+  const edit=Boolean(job); const j=normalizeJob(job||{status:'Plánovaná',areas:[],materials:[],incomes:[],expenses:[]});
   return `<div class="page-head"><div><div class="eyebrow">${edit?esc(j.id):'Nová realizace'}</div><h1>${edit?'Upravit zakázku':'Nová zakázka'}</h1></div></div>
     <form id="jobForm">
       <section class="form-card"><h2>Základ</h2><div class="form-grid two">
@@ -167,12 +181,17 @@ function formView(job=null){
         ${input('Klient','client',j.client,'Jméno / firma')}
         ${input('Město','city',j.city,'Brno')}
         ${input('Adresa','address',j.address,'Ulice a číslo')}
-        ${input('Plocha m²','area',j.area,'0','', 'number', '0.01')}
         ${input('Datum od','dateFrom',j.dateFrom,'','','date')}
         ${input('Datum do','dateTo',j.dateTo,'','','date')}
         ${input('Telefon','phone',j.phone,'+420…')}
         ${input('E-mail','email',j.email,'klient@email.cz','','email')}
       </div></section>
+
+      <section class="form-card"><div class="page-head compact"><div><div class="eyebrow">Rozsah realizace</div><h2>Plochy</h2></div><button type="button" class="secondary-btn" id="addArea">+ Přidat plochu</button></div>
+        <div id="areasEditor">${(j.areas||[]).map(areaEditor).join('')}</div>
+        ${(j.areas||[]).length?'':'<p class="muted editor-hint" id="areaHint">Přidej podlahu, stěny, strop, schody nebo vlastní specifikaci. Celková plocha se sečte automaticky.</p>'}
+        <div class="area-total" id="areaTotal"></div>
+      </section>
 
       <section class="form-card"><div class="page-head compact"><div><div class="eyebrow">Použité na realizaci</div><h2>Materiály a barvy</h2></div><button type="button" class="secondary-btn" id="addMaterial">+ Přidat</button></div>
         <div id="materialsEditor">${(j.materials||[]).map(materialEditor).join('')}</div>
@@ -199,12 +218,15 @@ function formView(job=null){
 
 function detailView(j){
   if(!j) return empty('Zakázka nebyla nalezena.');
-  j=normalizeJob(j); const mats=j.materials||[], ins=j.incomes||[], exs=j.expenses||[];
+  j=normalizeJob(j); const areas=j.areas||[], mats=j.materials||[], ins=j.incomes||[], exs=j.expenses||[];
   return `<div class="page-head"><div><div class="eyebrow">${esc(j.id)}</div><h1>${esc(j.name)}</h1><div class="job-meta">${esc(j.client||'')} ${j.city?'· '+esc(j.city):''}</div></div><span class="badge ${statusClass(j.status)}">${esc(j.status)}</span></div>
   <div class="detail-grid two-col">
     <div>
       <section class="detail-card"><h2>Zakázka</h2>
-        ${drow('Klient',esc(j.client||'—'))}${drow('Adresa',esc([j.address,j.city].filter(Boolean).join(', ')||'—'))}${drow('Telefon',esc(j.phone||'—'))}${drow('E-mail',esc(j.email||'—'))}${drow('Realizace',`${number.format(n(j.area))} m²`)}${drow('Termín',`${fmtDate(j.dateFrom)} – ${fmtDate(j.dateTo)}`)}
+        ${drow('Klient',esc(j.client||'—'))}${drow('Adresa',esc([j.address,j.city].filter(Boolean).join(', ')||'—'))}${drow('Telefon',esc(j.phone||'—'))}${drow('E-mail',esc(j.email||'—'))}${drow('Celková plocha',`${number.format(totalArea(j))} m²`)}${drow('Termín',`${fmtDate(j.dateFrom)} – ${fmtDate(j.dateTo)}`)}
+      </section>
+      <section class="detail-card section"><div class="page-head compact"><div><div class="eyebrow">Rozsah realizace</div><h2>Plochy</h2></div><span class="count-chip">${areas.length}</span></div>
+        ${areas.length?`<div class="entry-list">${areas.map(a=>`<div class="entry-row"><div><strong>${esc(a.type||'Plocha')}</strong><small>${esc(a.specification||'Bez specifikace')}</small></div><strong>${number.format(n(a.m2))} m²</strong></div>`).join('')}</div>`:'<div class="empty compact-empty">Bez zadaných ploch.</div>'}
       </section>
       <section class="detail-card section"><div class="page-head compact"><div><div class="eyebrow">Použito na realizaci</div><h2>Materiály a barvy</h2></div></div>
         ${mats.length?`<div class="material-list">${mats.map(m=>`<div class="material-pill"><strong>${esc([m.manufacturer,m.product].filter(Boolean).join(' · ')||'Materiál')}</strong><small>${esc([m.color,m.area].filter(Boolean).join(' · ')||'Bez odstínu')}</small></div>`).join('')}</div>`:'<div class="empty">Bez zadaných materiálů.</div>'}
@@ -234,8 +256,8 @@ function financeView(){
 }
 
 function settingsView(){return `<div class="page-head"><div><div class="eyebrow">STRUTTURA Projects</div><h1>Více</h1></div></div>
- <div class="settings-card"><h2>Záloha dat</h2><p class="muted">V1.02 zatím ukládá data přímo v tomto zařízení. Záloha obsahuje zakázky, materiály, příjmy i náklady.</p><div class="form-grid two"><button class="secondary-btn" id="exportBtn">Exportovat zálohu</button><label class="secondary-btn file-label">Importovat zálohu<input id="importInput" type="file" accept="application/json" hidden></label></div></div>
- <div class="settings-card"><h2>Verze</h2>${drow('Aplikace',VERSION)}${drow('Zakázek',jobs.length)}<p class="muted">V1.02: originální STRUTTURA logo, opakované příjmy a opakované náklady. Bez DPH logiky.</p></div>`;}
+ <div class="settings-card"><h2>Záloha dat</h2><p class="muted">V1.03 zatím ukládá data přímo v tomto zařízení. Záloha obsahuje zakázky, plochy, materiály, příjmy i náklady.</p><div class="form-grid two"><button class="secondary-btn" id="exportBtn">Exportovat zálohu</button><label class="secondary-btn file-label">Importovat zálohu<input id="importInput" type="file" accept="application/json" hidden></label></div></div>
+ <div class="settings-card"><h2>Verze</h2>${drow('Aplikace',VERSION)}${drow('Zakázek',jobs.length)}<p class="muted">V1.03: rozdělení realizace na více ploch s automatickým součtem m². Zachovává logo, opakované příjmy, náklady a finance bez DPH logiky.</p></div>`;}
 
 function bindDynamicEvents(){
  document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.go,b.dataset.id||currentJobId)));
@@ -243,6 +265,7 @@ function bindDynamicEvents(){
  document.querySelectorAll('[data-edit-job]').forEach(b=>b.addEventListener('click',()=>navigate('edit',b.dataset.editJob)));
  document.querySelectorAll('[data-delete-job]').forEach(b=>b.addEventListener('click',()=>deleteJob(b.dataset.deleteJob)));
  const search=document.getElementById('jobSearch'); if(search) search.addEventListener('input',()=>{const q=search.value.trim().toLowerCase(); document.querySelectorAll('[data-job-card]').forEach(c=>c.style.display=c.dataset.search.includes(q)?'':'none');});
+ const addArea=document.getElementById('addArea'); if(addArea) addArea.addEventListener('click',()=>addEditor('areasEditor',areaEditor(),'areaHint'));
  const addMaterial=document.getElementById('addMaterial'); if(addMaterial) addMaterial.addEventListener('click',()=>addEditor('materialsEditor',materialEditor(),'materialHint'));
  const addIncome=document.getElementById('addIncome'); if(addIncome) addIncome.addEventListener('click',()=>addEditor('incomesEditor',incomeEditor({category:document.querySelectorAll('.income-editor-card').length?'Vícepráce':'Původní zakázka'}),'incomeHint'));
  const addExpense=document.getElementById('addExpense'); if(addExpense) addExpense.addEventListener('click',()=>addEditor('expensesEditor',expenseEditor(),'expenseHint'));
@@ -254,9 +277,15 @@ function bindDynamicEvents(){
 
 function addEditor(targetId,html,hintId){ const wrap=document.getElementById(targetId); wrap.insertAdjacentHTML('beforeend',html); const hint=document.getElementById(hintId); if(hint) hint.remove(); bindRemoveEditors(); renderLiveFinance(); }
 function bindRemoveEditors(){
+ document.querySelectorAll('.remove-area').forEach(b=>b.onclick=()=>{b.closest('.area-editor-card').remove(); renderLiveFinance();});
  document.querySelectorAll('.remove-material').forEach(b=>b.onclick=()=>{b.closest('.material-editor-card').remove(); renderLiveFinance();});
  document.querySelectorAll('.remove-income').forEach(b=>b.onclick=()=>{b.closest('.income-editor-card').remove(); renderLiveFinance();});
  document.querySelectorAll('.remove-expense').forEach(b=>b.onclick=()=>{b.closest('.expense-editor-card').remove(); renderLiveFinance();});
+}
+
+function collectAreas(f){
+ const types=[...f.querySelectorAll('[name="areaType"]')], specs=[...f.querySelectorAll('[name="areaSpecification"]')], m2s=[...f.querySelectorAll('[name="areaM2"]')];
+ return types.map((el,i)=>({type:el.value,specification:specs[i]?.value.trim()||'',m2:n(m2s[i]?.value)})).filter(a=>a.m2||a.specification);
 }
 
 function collectMaterials(f){
@@ -274,7 +303,8 @@ function collectEntries(f,prefix){
 
 function renderLiveFinance(){
  const f=document.getElementById('jobForm'), box=document.getElementById('liveFinance'); if(!f||!box)return;
- const temp={ area:n(new FormData(f).get('area')), incomes:collectEntries(f,'income'), expenses:collectEntries(f,'expense') };
+ const temp={ areas:collectAreas(f), incomes:collectEntries(f,'income'), expenses:collectEntries(f,'expense') };
+ const areaBox=document.getElementById('areaTotal'); if(areaBox) areaBox.innerHTML=drow('Celková plocha',`${number.format(totalArea(temp))} m²`);
  box.innerHTML=`<div class="finance-live-grid"><div>${drow('Příjmy celkem',money.format(income(temp)))}${drow('Náklady celkem',money.format(costs(temp)))}</div><div>${drow('Zisk',money.format(profit(temp)))}${drow('Marže',(margin(temp)*100).toFixed(1).replace('.',',')+' %')}${drow('Příjmy / m²',money.format(pricePerM2(temp)))}</div></div>`;
 }
 
@@ -284,7 +314,7 @@ function saveJob(e){
  const job={
    id,
    name:fd.get('name').trim(), status:fd.get('status'), client:fd.get('client').trim(), city:fd.get('city').trim(), address:fd.get('address').trim(),
-   area:n(fd.get('area')), dateFrom:fd.get('dateFrom'), dateTo:fd.get('dateTo'), phone:fd.get('phone').trim(), email:fd.get('email').trim(),
+   areas:collectAreas(f), dateFrom:fd.get('dateFrom'), dateTo:fd.get('dateTo'), phone:fd.get('phone').trim(), email:fd.get('email').trim(),
    materials:collectMaterials(f), incomes:collectEntries(f,'income'), expenses:collectEntries(f,'expense'), notes:fd.get('notes').trim(),
    createdAt:old?.createdAt||new Date().toISOString(), updatedAt:new Date().toISOString()
  };

@@ -65,6 +65,8 @@ label { display: grid; gap: 7px; color: #d3d5d6; font-size: 12px; }
 .income-editor-card { border-left: 3px solid rgba(101,185,131,.65); }
 .expense-editor-card { border-left: 3px solid rgba(217,106,106,.55); }
 .material-editor-card { border-left: 3px solid rgba(185,154,97,.65); }
+.area-editor-card { border-left: 3px solid rgba(132,156,185,.65); }
+.area-total { margin-top: 12px; padding-top: 4px; }
 .finance-live-grid { display:grid; gap:0; }
 .detail-grid { display: grid; gap: 12px; }
 .detail-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
