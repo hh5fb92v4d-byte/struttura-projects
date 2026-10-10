@@ -8,17 +8,20 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="styles.css" />
-  <title>STRUTTURA Projects V1.03</title>
+  <link rel="stylesheet" href="styles.css?v=104" />
+  <title>STRUTTURA Projects V1.04</title>
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <div class="brand-lockup">
         <img src="assets/logo_vertical_light.svg" class="brand-logo" alt="STRUTTURA" />
-        <div class="brand-projects">PROJECTS <span id="versionLabel">V1.03</span></div>
+        <div class="brand-projects">PROJECTS <span id="versionLabel">V1.04</span></div>
       </div>
-      <button class="icon-btn" id="backupBtn" aria-label="Záloha dat" title="Záloha dat">↥</button>
+      <div class="top-actions">
+        <div class="cloud-status" id="cloudStatus" title="Stav cloudové synchronizace"><span class="cloud-dot"></span><span class="cloud-label">Cloud</span></div>
+        <button class="icon-btn" id="backupBtn" aria-label="Záloha dat" title="Záloha dat">↥</button>
+      </div>
     </header>
 
     <main id="app"></main>
@@ -32,6 +35,8 @@
     </nav>
   </div>
 
-  <script src="app.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js?v=104"></script>
+  <script src="app.js?v=104" defer></script>
 </body>
 </html>

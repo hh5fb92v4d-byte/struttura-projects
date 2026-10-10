@@ -1,20 +1,18 @@
-STRUTTURA Projects V1.03
+STRUTTURA Projects V1.04
 
-Změny proti V1.02:
-- jedna zakázka může mít libovolný počet ploch realizace
-- typy ploch: Podlaha / Stěny / Strop / Schody / Ostatní
-- každá plocha má vlastní specifikaci a počet m²
-- celková plocha zakázky se počítá automaticky
-- příjmy na m² se počítají z celkového součtu ploch
-- detail zakázky zobrazuje rozpad jednotlivých ploch
-- migrace dat z V1.02: původní jedno pole m² se zachová jako „Původní celková plocha“
+Novinky:
+- přihlášení e-mailem a heslem přes Supabase Auth
+- zabezpečená cloudová synchronizace Mac ↔ mobil
+- automatické načtení změn při otevření/fokusu + pravidelná kontrola
+- lokální kopie dat zůstává jako offline pojistka
+- ruční synchronizace a odhlášení v sekci Více
+- vylepšená aktualizace service workeru, aby nové verze nezůstávaly v cache
 
-Zůstává zachováno:
-- originální STRUTTURA logo
-- opakované příjmy: Původní zakázka / Vícepráce / Ostatní
-- opakované náklady: Materiál / PHM / Spotřební materiál / Ostatní
-- bez DPH logiky
-- lokální ukládání a export/import zálohy
+Bezpečnost:
+- v config.js je pouze publishable key určený pro frontend
+- secret/service_role key ani databázové heslo nejsou součástí aplikace
+- tabulka user_data musí mít zapnuté RLS a policy own data only
 
-GitHub Pages:
-Nahraj obsah této složky do kořene repozitáře a potvrď přepsání existujících souborů.
+Před prvním vytvořením účtu v aplikaci nastav v Supabase Authentication -> URL Configuration:
+Site URL: https://hh5fb92v4d-byte.github.io/struttura-projects/
+Redirect URLs: https://hh5fb92v4d-byte.github.io/struttura-projects/**

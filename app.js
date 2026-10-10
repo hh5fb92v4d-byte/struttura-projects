@@ -1,6 +1,7 @@
-const VERSION = 'V1.03';
-const STORAGE_KEY = 'struttura_projects_v103_jobs';
-const OLD_STORAGE_KEYS = ['struttura_projects_v102_jobs','struttura_projects_v101_jobs'];
+const VERSION = 'V1.04';
+const STORAGE_KEY = 'struttura_projects_v104_jobs';
+const OLD_STORAGE_KEYS = ['struttura_projects_v103_jobs','struttura_projects_v102_jobs','struttura_projects_v101_jobs'];
+const CLOUD_STAMP_KEY = 'struttura_projects_cloud_stamp';
 
 const money = new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK', maximumFractionDigits: 0 });
 const number = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 1 });
@@ -8,6 +9,14 @@ const number = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 1 });
 let jobs = loadJobs();
 let currentRoute = 'dashboard';
 let currentJobId = null;
+let sb = null;
+let session = null;
+let authReady = false;
+let cloudDirty = false;
+let syncInFlight = false;
+let pushTimer = null;
+let syncTimer = null;
+let syncState = 'offline';
 
 function n(v) { const x = Number(v); return Number.isFinite(x) ? x : 0; }
 function esc(v='') { return String(v).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
@@ -20,7 +29,7 @@ function totalArea(j) { return (j.areas||[]).reduce((sum, item) => sum + n(item.
 function pricePerM2(j) { return totalArea(j) > 0 ? income(j) / totalArea(j) : 0; }
 function fmtDate(v) { if (!v) return '—'; const d = new Date(v + 'T12:00:00'); return d.toLocaleDateString('cs-CZ'); }
 function statusClass(s) { return s === 'Dokončená' ? 'done' : s === 'Probíhá' ? 'active' : s === 'Reklamace' ? 'claim' : ''; }
-function toast(msg) { const t=document.createElement('div'); t.className='toast'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2200); }
+function toast(msg) { const t=document.createElement('div'); t.className='toast'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2600); }
 
 function normalizeJob(j={}) {
   const out = { ...j };
@@ -58,8 +67,146 @@ function loadJobs() {
     return [];
   } catch { return []; }
 }
-function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(jobs)); }
+function persistLocal() { localStorage.setItem(STORAGE_KEY, JSON.stringify(jobs)); }
+function persist() {
+  persistLocal();
+  cloudDirty = true;
+  if (session) queueCloudPush();
+}
 
+function setSyncState(state, label='') {
+  syncState = state;
+  const el = document.getElementById('cloudStatus');
+  if (!el) return;
+  el.className = `cloud-status ${state}`;
+  const text = label || ({synced:'Synchronizováno',syncing:'Synchronizuji',error:'Chyba cloudu',offline:'Offline',auth:'Přihlášení'})[state] || 'Cloud';
+  const labelEl = el.querySelector('.cloud-label'); if (labelEl) labelEl.textContent = text;
+}
+
+function queueCloudPush() {
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => pushCloudData(), 350);
+}
+
+async function pushCloudData({silent=false}={}) {
+  if (!sb || !session || syncInFlight) return;
+  syncInFlight = true; setSyncState('syncing');
+  const stamp = new Date().toISOString();
+  const { error } = await sb.from('user_data').upsert({
+    user_id: session.user.id,
+    jobs,
+    updated_at: stamp
+  }, { onConflict: 'user_id' });
+  syncInFlight = false;
+  if (error) {
+    setSyncState(navigator.onLine ? 'error' : 'offline');
+    if (!silent) toast('Cloud se nepodařilo uložit. Data zůstala v tomto zařízení.');
+    return;
+  }
+  cloudDirty = false;
+  localStorage.setItem(CLOUD_STAMP_KEY, stamp);
+  setSyncState('synced');
+}
+
+async function pullCloudData({force=false, silent=true}={}) {
+  if (!sb || !session || syncInFlight || (cloudDirty && !force)) return;
+  syncInFlight = true; setSyncState('syncing');
+  const { data, error } = await sb.from('user_data').select('jobs,updated_at').eq('user_id', session.user.id).maybeSingle();
+  syncInFlight = false;
+  if (error) {
+    setSyncState(navigator.onLine ? 'error' : 'offline');
+    if (!silent) toast('Cloudová data se nepodařilo načíst.');
+    return;
+  }
+  if (!data) {
+    cloudDirty = true;
+    await pushCloudData({silent});
+    return;
+  }
+  const remoteJobs = Array.isArray(data.jobs) ? data.jobs.map(normalizeJob) : [];
+  if (JSON.stringify(remoteJobs) !== JSON.stringify(jobs)) {
+    jobs = remoteJobs;
+    persistLocal();
+    if (authReady) render();
+    if (!silent) toast('Data z cloudu byla aktualizována.');
+  }
+  localStorage.setItem(CLOUD_STAMP_KEY, data.updated_at || '');
+  setSyncState('synced');
+}
+
+function startSyncLoop() {
+  clearInterval(syncTimer);
+  syncTimer = setInterval(() => { if (document.visibilityState === 'visible') pullCloudData(); }, 7000);
+}
+function stopSyncLoop() { clearInterval(syncTimer); syncTimer = null; }
+
+async function initApp() {
+  const cfg = window.STRUTTURA_CONFIG || {};
+  if (!window.supabase || !cfg.supabaseUrl || !cfg.supabasePublishableKey) {
+    authReady = true; render(); return;
+  }
+  sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabasePublishableKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  });
+  const { data } = await sb.auth.getSession();
+  session = data.session || null;
+  if (session) await pullCloudData({force:true});
+  authReady = true;
+  if (session) startSyncLoop();
+  render();
+  sb.auth.onAuthStateChange(async (event, newSession) => {
+    const wasSignedIn = !!session;
+    session = newSession || null;
+    if (session && !wasSignedIn) {
+      await pullCloudData({force:true, silent:false});
+      startSyncLoop();
+      currentRoute='dashboard'; currentJobId=null;
+    }
+    if (!session) { stopSyncLoop(); setSyncState('auth'); currentRoute='dashboard'; currentJobId=null; }
+    render();
+  });
+}
+
+function authView() {
+  if (!window.supabase || !window.STRUTTURA_CONFIG?.supabaseUrl) return `<div class="auth-wrap"><div class="auth-card"><div class="eyebrow">STRUTTURA Projects ${VERSION}</div><h1>Cloud není nastaven</h1><p class="muted">Chybí cloudová konfigurace aplikace.</p></div></div>`;
+  return `<div class="auth-wrap"><div class="auth-card">
+    <img src="assets/logo_vertical_light.svg" class="auth-logo" alt="STRUTTURA" />
+    <div class="eyebrow">STRUTTURA Projects ${VERSION}</div><h1>Přihlášení</h1>
+    <p class="muted">Stejná data na Macu i mobilu. Přihlas se stejným účtem na obou zařízeních.</p>
+    <form id="authForm" class="auth-form">
+      <label>E-mail<input type="email" name="authEmail" autocomplete="email" required placeholder="tvuj@email.cz" /></label>
+      <label>Heslo<input type="password" name="authPassword" autocomplete="current-password" minlength="6" required placeholder="Minimálně 6 znaků" /></label>
+      <button class="primary-btn" type="submit">Přihlásit</button>
+      <button class="secondary-btn" type="button" id="signUpBtn">Vytvořit účet</button>
+      <div class="auth-message" id="authMessage"></div>
+    </form>
+  </div></div>`;
+}
+
+async function signIn(e) {
+  e.preventDefault();
+  const f=e.currentTarget, fd=new FormData(f), email=String(fd.get('authEmail')||'').trim(), password=String(fd.get('authPassword')||'');
+  setAuthMessage('Přihlašuji…');
+  const { error } = await sb.auth.signInWithPassword({email,password});
+  if (error) setAuthMessage(error.message, true);
+}
+async function signUp() {
+  const f=document.getElementById('authForm'); if(!f)return;
+  const fd=new FormData(f), email=String(fd.get('authEmail')||'').trim(), password=String(fd.get('authPassword')||'');
+  if(!email || password.length<6){setAuthMessage('Vyplň e-mail a heslo alespoň 6 znaků.',true);return;}
+  setAuthMessage('Vytvářím účet…');
+  const redirectTo = window.location.origin + window.location.pathname;
+  const { data, error } = await sb.auth.signUp({email,password,options:{emailRedirectTo:redirectTo}});
+  if(error){setAuthMessage(error.message,true);return;}
+  if(data.session) setAuthMessage('Účet je vytvořený a jsi přihlášen.');
+  else setAuthMessage('Účet vytvořen. Zkontroluj e-mail a potvrď registraci. Pak se vrať sem a přihlas se.');
+}
+function setAuthMessage(msg,isError=false){const el=document.getElementById('authMessage');if(el){el.textContent=msg;el.classList.toggle('error',isError);}}
+
+async function signOut() {
+  if (cloudDirty) await pushCloudData({silent:true});
+  if (sb) await sb.auth.signOut();
+}
 function nextId() {
   const year = new Date().getFullYear();
   const nums = jobs.map(j => String(j.id||'').match(new RegExp(`STR-${year}-(\\d{4})`))).filter(Boolean).map(m => Number(m[1]));
@@ -77,6 +224,10 @@ document.getElementById('backupBtn').addEventListener('click', exportBackup);
 
 function render() {
   const app=document.getElementById('app');
+  document.body.classList.toggle('auth-mode', !session);
+  document.getElementById('backupBtn').style.display = session ? '' : 'none';
+  if (!authReady) { app.innerHTML='<div class="auth-wrap"><div class="auth-card"><div class="loading-line"></div><p class="muted">Načítám STRUTTURA Projects…</p></div></div>'; return; }
+  if (!session) { app.innerHTML=authView(); bindAuthEvents(); setSyncState('auth'); return; }
   if(currentRoute==='dashboard') app.innerHTML=dashboardView();
   if(currentRoute==='jobs') app.innerHTML=jobsView();
   if(currentRoute==='new') app.innerHTML=formView();
@@ -85,6 +236,12 @@ function render() {
   if(currentRoute==='finance') app.innerHTML=financeView();
   if(currentRoute==='settings') app.innerHTML=settingsView();
   bindDynamicEvents();
+  setSyncState(syncState);
+}
+
+function bindAuthEvents(){
+ const f=document.getElementById('authForm'); if(f) f.addEventListener('submit',signIn);
+ const s=document.getElementById('signUpBtn'); if(s) s.addEventListener('click',signUp);
 }
 
 function kpi(label,value,sub){return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-sub">${sub}</div></div>`;}
@@ -256,8 +413,12 @@ function financeView(){
 }
 
 function settingsView(){return `<div class="page-head"><div><div class="eyebrow">STRUTTURA Projects</div><h1>Více</h1></div></div>
- <div class="settings-card"><h2>Záloha dat</h2><p class="muted">V1.03 zatím ukládá data přímo v tomto zařízení. Záloha obsahuje zakázky, plochy, materiály, příjmy i náklady.</p><div class="form-grid two"><button class="secondary-btn" id="exportBtn">Exportovat zálohu</button><label class="secondary-btn file-label">Importovat zálohu<input id="importInput" type="file" accept="application/json" hidden></label></div></div>
- <div class="settings-card"><h2>Verze</h2>${drow('Aplikace',VERSION)}${drow('Zakázek',jobs.length)}<p class="muted">V1.03: rozdělení realizace na více ploch s automatickým součtem m². Zachovává logo, opakované příjmy, náklady a finance bez DPH logiky.</p></div>`;}
+ <div class="settings-card"><div class="page-head compact"><div><div class="eyebrow">Cloud</div><h2>Synchronizace</h2></div><span class="badge active">${esc(session?.user?.email||'')}</span></div>
+   <p class="muted">Zakázky se ukládají lokálně i do zabezpečeného Supabase cloudu. Na Macu i mobilu používej stejný účet.</p>
+   <div class="form-grid two"><button class="primary-btn" id="syncNowBtn">Synchronizovat teď</button><button class="secondary-btn" id="logoutBtn">Odhlásit</button></div>
+ </div>
+ <div class="settings-card"><h2>Záloha dat</h2><p class="muted">Ruční JSON záloha zůstává jako další pojistka. Obsahuje zakázky, plochy, materiály, příjmy i náklady.</p><div class="form-grid two"><button class="secondary-btn" id="exportBtn">Exportovat zálohu</button><label class="secondary-btn file-label">Importovat zálohu<input id="importInput" type="file" accept="application/json" hidden></label></div></div>
+ <div class="settings-card"><h2>Verze</h2>${drow('Aplikace',VERSION)}${drow('Zakázek',jobs.length)}<p class="muted">V1.04: přihlášení a cloudová synchronizace Mac ↔ mobil. V1.03 plochy, opakované příjmy a náklady zůstávají beze změny.</p></div>`;}
 
 function bindDynamicEvents(){
  document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.go,b.dataset.id||currentJobId)));
@@ -273,6 +434,8 @@ function bindDynamicEvents(){
  const form=document.getElementById('jobForm'); if(form){form.addEventListener('submit',saveJob); form.addEventListener('input',renderLiveFinance); renderLiveFinance();}
  const ex=document.getElementById('exportBtn'); if(ex) ex.addEventListener('click',exportBackup);
  const im=document.getElementById('importInput'); if(im) im.addEventListener('change',importBackup);
+ const sn=document.getElementById('syncNowBtn'); if(sn) sn.addEventListener('click',async()=>{ if(cloudDirty) await pushCloudData({silent:false}); else await pullCloudData({force:true,silent:false}); });
+ const lo=document.getElementById('logoutBtn'); if(lo) lo.addEventListener('click',signOut);
 }
 
 function addEditor(targetId,html,hintId){ const wrap=document.getElementById(targetId); wrap.insertAdjacentHTML('beforeend',html); const hint=document.getElementById(hintId); if(hint) hint.remove(); bindRemoveEditors(); renderLiveFinance(); }
@@ -326,5 +489,16 @@ function deleteJob(id){ if(!confirm('Opravdu chceš tuto zakázku smazat?'))retu
 function exportBackup(){ const blob=new Blob([JSON.stringify({version:VERSION,exportedAt:new Date().toISOString(),jobs},null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`STRUTTURA_Projects_backup_${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href); }
 function importBackup(e){ const file=e.target.files?.[0]; if(!file)return; const r=new FileReader(); r.onload=()=>{try{const data=JSON.parse(r.result); if(!Array.isArray(data.jobs)) throw new Error(); if(confirm(`Načíst ${data.jobs.length} zakázek a nahradit současná data?`)){jobs=data.jobs.map(normalizeJob);persist();toast('Záloha obnovena');navigate('dashboard');}}catch{alert('Soubor není platná záloha STRUTTURA Projects.');}}; r.readAsText(file); }
 
-if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+window.addEventListener('online',()=>{ if(session){setSyncState('syncing'); pullCloudData({force:true});} });
+window.addEventListener('offline',()=>setSyncState('offline'));
+window.addEventListener('focus',()=>{ if(session) pullCloudData(); });
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible' && session) pullCloudData(); });
+
+if('serviceWorker' in navigator) window.addEventListener('load',async()=>{
+  try {
+    const reg=await navigator.serviceWorker.register('./sw.js?v=104',{updateViaCache:'none'});
+    reg.update();
+  } catch {}
+});
 render();
+initApp();
