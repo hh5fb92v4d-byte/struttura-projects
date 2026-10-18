@@ -1,5 +1,5 @@
-const CACHE = 'struttura-projects-v104';
-const ASSETS = ['./','./index.html','./styles.css?v=104','./app.js?v=104','./config.js?v=104','./manifest.json','./assets/logo_vertical_light.svg','./icons/icon-192.png','./icons/icon-512.png'];
+const CACHE = 'struttura-projects-v105';
+const ASSETS = ['./','./index.html','./styles.css?v=105','./app.js?v=105','./config.js?v=105','./manifest.json','./assets/logo_vertical_light.svg','./icons/icon-192.png','./icons/icon-512.png'];
 self.addEventListener('install', event => {
   self.skipWaiting();
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)));

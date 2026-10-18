@@ -1,7 +1,9 @@
-const VERSION = 'V1.04';
+const VERSION = 'V1.05';
 const STORAGE_KEY = 'struttura_projects_v104_jobs';
 const OLD_STORAGE_KEYS = ['struttura_projects_v103_jobs','struttura_projects_v102_jobs','struttura_projects_v101_jobs'];
 const CLOUD_STAMP_KEY = 'struttura_projects_cloud_stamp';
+const LOCAL_STAMP_KEY = 'struttura_projects_local_stamp';
+const CLOUD_DIRTY_KEY = 'struttura_projects_cloud_dirty';
 
 const money = new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK', maximumFractionDigits: 0 });
 const number = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 1 });
@@ -12,7 +14,7 @@ let currentJobId = null;
 let sb = null;
 let session = null;
 let authReady = false;
-let cloudDirty = false;
+let cloudDirty = localStorage.getItem(CLOUD_DIRTY_KEY) === '1';
 let syncInFlight = false;
 let pushTimer = null;
 let syncTimer = null;
@@ -68,9 +70,25 @@ function loadJobs() {
   } catch { return []; }
 }
 function persistLocal() { localStorage.setItem(STORAGE_KEY, JSON.stringify(jobs)); }
+function latestJobStamp() {
+  return jobs.reduce((latest, job) => {
+    const stamp = String(job.updatedAt || job.createdAt || '');
+    return stamp > latest ? stamp : latest;
+  }, '');
+}
+function getLocalStamp() {
+  return localStorage.getItem(LOCAL_STAMP_KEY) || latestJobStamp() || localStorage.getItem(CLOUD_STAMP_KEY) || '';
+}
+function setLocalStamp(stamp) { if (stamp) localStorage.setItem(LOCAL_STAMP_KEY, stamp); }
+function setCloudDirty(value) {
+  cloudDirty = !!value;
+  localStorage.setItem(CLOUD_DIRTY_KEY, cloudDirty ? '1' : '0');
+}
 function persist() {
   persistLocal();
-  cloudDirty = true;
+  const stamp = new Date().toISOString();
+  setLocalStamp(stamp);
+  setCloudDirty(true);
   if (session) queueCloudPush();
 }
 
@@ -83,60 +101,123 @@ function setSyncState(state, label='') {
   const labelEl = el.querySelector('.cloud-label'); if (labelEl) labelEl.textContent = text;
 }
 
-function queueCloudPush() {
+function queueCloudPush(delay=350) {
   clearTimeout(pushTimer);
-  pushTimer = setTimeout(() => pushCloudData(), 350);
+  pushTimer = setTimeout(() => pushCloudData(), delay);
 }
 
 async function pushCloudData({silent=false}={}) {
-  if (!sb || !session || syncInFlight) return;
-  syncInFlight = true; setSyncState('syncing');
-  const stamp = new Date().toISOString();
+  if (!sb || !session) return false;
+  if (syncInFlight) {
+    if (cloudDirty) queueCloudPush(700);
+    return false;
+  }
+  syncInFlight = true;
+  setSyncState('syncing');
+
+  // Zachytíme přesně tu verzi dat, kterou právě odesíláme. Pokud uživatel
+  // během uploadu něco změní, novější lokální verze zůstane označená jako dirty.
+  const payload = jobs.map(job => JSON.parse(JSON.stringify(job)));
+  const stamp = getLocalStamp() || new Date().toISOString();
+  if (!getLocalStamp()) setLocalStamp(stamp);
+
   const { error } = await sb.from('user_data').upsert({
     user_id: session.user.id,
-    jobs,
+    jobs: payload,
     updated_at: stamp
   }, { onConflict: 'user_id' });
+
   syncInFlight = false;
   if (error) {
     setSyncState(navigator.onLine ? 'error' : 'offline');
-    if (!silent) toast('Cloud se nepodařilo uložit. Data zůstala v tomto zařízení.');
-    return;
+    if (!silent) toast('Cloud se nepodařilo uložit. Data zůstala bezpečně v tomto zařízení.');
+    if (cloudDirty) queueCloudPush(2500);
+    return false;
   }
-  cloudDirty = false;
+
   localStorage.setItem(CLOUD_STAMP_KEY, stamp);
-  setSyncState('synced');
+  if (getLocalStamp() === stamp) {
+    setCloudDirty(false);
+    setSyncState('synced');
+  } else {
+    // Během uploadu vznikla další změna. Nikdy ji neoznačíme za synchronizovanou.
+    setCloudDirty(true);
+    setSyncState('syncing');
+    queueCloudPush(500);
+  }
+  return true;
 }
 
-async function pullCloudData({force=false, silent=true}={}) {
-  if (!sb || !session || syncInFlight || (cloudDirty && !force)) return;
-  syncInFlight = true; setSyncState('syncing');
+async function pullCloudData({silent=true}={}) {
+  if (!sb || !session) return;
+  if (syncInFlight) return;
+
+  // Nejdřív vždy zachráníme neodeslanou lokální změnu. Starší cloud ji nesmí přepsat.
+  if (cloudDirty) {
+    queueCloudPush(150);
+    return;
+  }
+
+  // Zapamatujeme si stav před downloadem. Když uživatel během čekání něco uloží,
+  // výsledek staršího downloadu zahodíme a pošleme novou lokální verzi do cloudu.
+  const pullStartStamp = getLocalStamp();
+  syncInFlight = true;
+  setSyncState('syncing');
   const { data, error } = await sb.from('user_data').select('jobs,updated_at').eq('user_id', session.user.id).maybeSingle();
   syncInFlight = false;
+
+  if (cloudDirty || getLocalStamp() !== pullStartStamp) {
+    queueCloudPush(100);
+    return;
+  }
+
   if (error) {
     setSyncState(navigator.onLine ? 'error' : 'offline');
     if (!silent) toast('Cloudová data se nepodařilo načíst.');
     return;
   }
+
   if (!data) {
-    cloudDirty = true;
+    setCloudDirty(true);
+    if (!getLocalStamp()) setLocalStamp(new Date().toISOString());
     await pushCloudData({silent});
     return;
   }
+
   const remoteJobs = Array.isArray(data.jobs) ? data.jobs.map(normalizeJob) : [];
+  const remoteStamp = String(data.updated_at || '');
+  const localStamp = getLocalStamp();
+  localStorage.setItem(CLOUD_STAMP_KEY, remoteStamp);
+
+  // Pokud je lokální kopie novější než cloud (např. po výpadku), pošleme ji nahoru.
+  if (localStamp && remoteStamp && localStamp > remoteStamp) {
+    setCloudDirty(true);
+    await pushCloudData({silent});
+    return;
+  }
+
   if (JSON.stringify(remoteJobs) !== JSON.stringify(jobs)) {
     jobs = remoteJobs;
     persistLocal();
+    setLocalStamp(remoteStamp || latestJobStamp());
     if (authReady) render();
     if (!silent) toast('Data z cloudu byla aktualizována.');
+  } else if (remoteStamp && (!localStamp || remoteStamp > localStamp)) {
+    setLocalStamp(remoteStamp);
   }
-  localStorage.setItem(CLOUD_STAMP_KEY, data.updated_at || '');
+
+  setCloudDirty(false);
   setSyncState('synced');
 }
 
 function startSyncLoop() {
   clearInterval(syncTimer);
-  syncTimer = setInterval(() => { if (document.visibilityState === 'visible') pullCloudData(); }, 7000);
+  syncTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      if (cloudDirty) queueCloudPush(100);
+      else pullCloudData();
+    }
+  }, 7000);
 }
 function stopSyncLoop() { clearInterval(syncTimer); syncTimer = null; }
 
@@ -150,7 +231,7 @@ async function initApp() {
   });
   const { data } = await sb.auth.getSession();
   session = data.session || null;
-  if (session) await pullCloudData({force:true});
+  if (session) { if (cloudDirty) await pushCloudData({silent:true}); else await pullCloudData(); }
   authReady = true;
   if (session) startSyncLoop();
   render();
@@ -158,7 +239,7 @@ async function initApp() {
     const wasSignedIn = !!session;
     session = newSession || null;
     if (session && !wasSignedIn) {
-      await pullCloudData({force:true, silent:false});
+      if (cloudDirty) await pushCloudData({silent:false}); else await pullCloudData({silent:false});
       startSyncLoop();
       currentRoute='dashboard'; currentJobId=null;
     }
@@ -418,7 +499,7 @@ function settingsView(){return `<div class="page-head"><div><div class="eyebrow"
    <div class="form-grid two"><button class="primary-btn" id="syncNowBtn">Synchronizovat teď</button><button class="secondary-btn" id="logoutBtn">Odhlásit</button></div>
  </div>
  <div class="settings-card"><h2>Záloha dat</h2><p class="muted">Ruční JSON záloha zůstává jako další pojistka. Obsahuje zakázky, plochy, materiály, příjmy i náklady.</p><div class="form-grid two"><button class="secondary-btn" id="exportBtn">Exportovat zálohu</button><label class="secondary-btn file-label">Importovat zálohu<input id="importInput" type="file" accept="application/json" hidden></label></div></div>
- <div class="settings-card"><h2>Verze</h2>${drow('Aplikace',VERSION)}${drow('Zakázek',jobs.length)}<p class="muted">V1.04: přihlášení a cloudová synchronizace Mac ↔ mobil. V1.03 plochy, opakované příjmy a náklady zůstávají beze změny.</p></div>`;}
+ <div class="settings-card"><h2>Verze</h2>${drow('Aplikace',VERSION)}${drow('Zakázek',jobs.length)}<p class="muted">V1.05: bezpečnější cloudová synchronizace – neodeslaná lokální změna se zachová, zápis se při kolizi zopakuje a starší cloud nesmí přepsat novější lokální data. Všechny funkce a data z V1.04 zůstávají beze změny.</p></div>`;}
 
 function bindDynamicEvents(){
  document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.go,b.dataset.id||currentJobId)));
@@ -434,7 +515,7 @@ function bindDynamicEvents(){
  const form=document.getElementById('jobForm'); if(form){form.addEventListener('submit',saveJob); form.addEventListener('input',renderLiveFinance); renderLiveFinance();}
  const ex=document.getElementById('exportBtn'); if(ex) ex.addEventListener('click',exportBackup);
  const im=document.getElementById('importInput'); if(im) im.addEventListener('change',importBackup);
- const sn=document.getElementById('syncNowBtn'); if(sn) sn.addEventListener('click',async()=>{ if(cloudDirty) await pushCloudData({silent:false}); else await pullCloudData({force:true,silent:false}); });
+ const sn=document.getElementById('syncNowBtn'); if(sn) sn.addEventListener('click',async()=>{ if(cloudDirty) await pushCloudData({silent:false}); else await pullCloudData({silent:false}); });
  const lo=document.getElementById('logoutBtn'); if(lo) lo.addEventListener('click',signOut);
 }
 
@@ -489,14 +570,14 @@ function deleteJob(id){ if(!confirm('Opravdu chceš tuto zakázku smazat?'))retu
 function exportBackup(){ const blob=new Blob([JSON.stringify({version:VERSION,exportedAt:new Date().toISOString(),jobs},null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`STRUTTURA_Projects_backup_${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(a.href); }
 function importBackup(e){ const file=e.target.files?.[0]; if(!file)return; const r=new FileReader(); r.onload=()=>{try{const data=JSON.parse(r.result); if(!Array.isArray(data.jobs)) throw new Error(); if(confirm(`Načíst ${data.jobs.length} zakázek a nahradit současná data?`)){jobs=data.jobs.map(normalizeJob);persist();toast('Záloha obnovena');navigate('dashboard');}}catch{alert('Soubor není platná záloha STRUTTURA Projects.');}}; r.readAsText(file); }
 
-window.addEventListener('online',()=>{ if(session){setSyncState('syncing'); pullCloudData({force:true});} });
+window.addEventListener('online',()=>{ if(session){ setSyncState('syncing'); if(cloudDirty) queueCloudPush(100); else pullCloudData(); } });
 window.addEventListener('offline',()=>setSyncState('offline'));
-window.addEventListener('focus',()=>{ if(session) pullCloudData(); });
-document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible' && session) pullCloudData(); });
+window.addEventListener('focus',()=>{ if(session){ if(cloudDirty) queueCloudPush(100); else pullCloudData(); } });
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible' && session){ if(cloudDirty) queueCloudPush(100); else pullCloudData(); } });
 
 if('serviceWorker' in navigator) window.addEventListener('load',async()=>{
   try {
-    const reg=await navigator.serviceWorker.register('./sw.js?v=104',{updateViaCache:'none'});
+    const reg=await navigator.serviceWorker.register('./sw.js?v=105',{updateViaCache:'none'});
     reg.update();
   } catch {}
 });
